@@ -55,6 +55,8 @@ col_vf["md_layer"] = std.vector('float')()
 col_vf["md_side"] = std.vector('float')()
 col_vf["md_module"] = std.vector('float')()
 col_vf["md_sensor"] = std.vector('float')()
+col_vf["md_sim_id"] = std.vector('float')()
+col_vf["sim_id"] = std.vector('float')()
 col_vf["sim_pt"] = std.vector('float')()
 col_vf["sim_eta"] = std.vector('float')()
 col_vf["sim_phi"] = std.vector('float')()
@@ -65,17 +67,6 @@ col_vf["sim_hasmd"] = std.vector('float')()
 for vf_n in col_vf:
     tree.Branch(vf_n, col_vf[vf_n])
 
-# create histograms
-pt_boundaries = [0, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0, 10, 15., 25, 50]
-pt_boundaries_a = array('d', pt_boundaries)
-histograms = {}
-histograms["h_den_pt"] = TH1D("den_pt", "den_pt", len(pt_boundaries) - 1, pt_boundaries_a)
-histograms["h_den_eta"] = TH1D("den_eta", "den_eta", 20, -2.1, 2.1)
-histograms["h_den_phi"] = TH1D("den_phi", "den_phi", 20, -3.1416, 3.1416)
-histograms["h_num_pt"] = TH1D("num_pt", "num_pt", len(pt_boundaries) - 1, pt_boundaries_a)
-histograms["h_num_eta"] = TH1D("num_eta", "num_eta", 20, -2.1, 2.1)
-histograms["h_num_phi"] = TH1D("num_phi", "num_phi", 20, -3.1416, 3.1416)
-
 #########################
 # create a reader and open an LCIO file
 reader = IOIMPL.LCFactory.getInstance().createLCReader()
@@ -84,10 +75,10 @@ reader.open(options.inFile)
 tracker_systems = [
     "VB",
     "VE",
-    "IB",
-    "IE",
-    "OB",
-    "OE",
+    # "IB",
+    # "IE",
+    # "OB",
+    # "OE",
 ]
 
 tracker_systems_map = {
@@ -98,6 +89,50 @@ tracker_systems_map = {
     5: "OB",
     6: "OE",
 }
+
+nmodules_map = {
+    1: { # VB
+        0: [16, 5, 1], # 16 modules, 5 sensors, 1 sides
+        1: [16, 5, 1], # 16 modules, 5 sensors, 1 sides
+        2: [15, 5, 1], # 15 modules, 5 sensors, 1 sides
+        3: [15, 5, 1], # 15 modules, 5 sensors, 1 sides
+        4: [21, 5, 1], # 21 modules, 5 sensors, 1 sides
+        5: [21, 5, 1], # 21 modules, 5 sensors, 1 sides
+        6: [29, 5, 1], # 29 modules, 5 sensors, 1 sides
+        7: [29, 5, 1], # 29 modules, 5 sensors, 1 sides
+        },
+    2: { # VE
+        0: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        1: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        2: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        3: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        4: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        5: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        6: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        7: [1, 16, 2], # 0 modules, 16 sensors, 2 sides (-1 or 1)
+        },
+    }
+
+module_keys = []
+lower_module_keys = []
+for system, layers in nmodules_map.items():
+    for layer, (nmod, nsens, nsides) in layers.items():
+        for module in range(nmod):
+            for sensor in range(nsens):
+                for side in [-1, 1] if nsides == 2 else [0]:
+                    key = (system, layer, module, sensor, side)
+                    module_keys.append(key)
+                    if layer % 2 == 0:
+                        lower_module_keys.append(key)
+
+# Note: VX first layer
+# VXBarrel
+# Layer 0-1 = 0-15 modules, 0-4 sensors
+# Layer 2-3 = 0-14 modules, 0-4 sensors
+# Layer 4-5 = 0-20 modules, 0-4 sensors
+# Layer 6-7 = 0-28 modules, 0-4 sensors
+# VXEndcap
+# Layer ALL = 0 modules, 0-15 sensors, -1 or 1 side
 
 def dPhiThreshold(lhit_v3):
     Bfield = 5
@@ -131,17 +166,12 @@ for ievent, event in enumerate(reader):
     for vf_n in col_vf:
         col_vf[vf_n].clear()
 
-    # Mini Doublet building
-    lowerhits = {}
-    upperhits = {}
+    hits = {}
     minidoublets = {}
     mcp_covered = []
-    for isystem in range(1, 7):
-        for imodule in range(16):
-            for isensor in range(16):
-                lowerhits[(isystem, imodule, isensor)] = []
-                upperhits[(isystem, imodule, isensor)] = []
-                minidoublets[(isystem, imodule, isensor)] = []
+    for module_key in module_keys:
+        hits[module_key] = []
+        minidoublets[module_key] = []
 
     hitCollections = {}
     hitRelationCollections = {}
@@ -161,17 +191,7 @@ for ievent, event in enumerate(reader):
             side = decoder["side"].value()
             module = decoder["module"].value()
             sensor = decoder["sensor"].value()
-            if system == 1: # if VB
-                sensor = 0 # lump them to all same sensor
-                if layer == 0:
-                    lowerhits[(system, module, sensor)].append(hit)
-                elif layer == 1:
-                    upperhits[(system, module, sensor)].append(hit)
-            elif system == 2:
-                if layer == 0:
-                    lowerhits[(system, module, sensor)].append(hit)
-                elif layer == 1:
-                    upperhits[(system, module, sensor)].append(hit)
+            hits[(system, layer, module, sensor, side)].append(hit)
             col_vf["hit_x"].push_back(hit.getPosition()[0])
             col_vf["hit_y"].push_back(hit.getPosition()[1])
             col_vf["hit_z"].push_back(hit.getPosition()[2])
@@ -181,74 +201,122 @@ for ievent, event in enumerate(reader):
             col_vf["hit_module"].push_back(module)
             col_vf["hit_sensor"].push_back(sensor)
 
+    if VERBOSE:
+        print("hits")
+        for key in hits:
+            if len(hits[key]) > 0:
+                print(f"key: {key} , hits[key]: {hits[key]} , ")
 
-    # vprint(lowerhits)
-    # vprint(upperhits)
+    for lower_module_key in lower_module_keys:
 
-    for isystem in range(1, 7):
-        for imodule in range(16):
-            for isensor in range(16):
-                cur_mod = (isystem, imodule, isensor)
-                for lhit in lowerhits[cur_mod]:
-                    for uhit in upperhits[cur_mod]:
-                        lhit_x = lhit.getPosition()[0]
-                        lhit_y = lhit.getPosition()[1]
-                        lhit_z = lhit.getPosition()[2]
-                        uhit_x = uhit.getPosition()[0]
-                        uhit_y = uhit.getPosition()[1]
-                        uhit_z = uhit.getPosition()[2]
+        upper_module_keys = []
+        upper_module_keys.append((
+            lower_module_key[0],
+            lower_module_key[1] + 1,
+            lower_module_key[2],
+            lower_module_key[3],
+            lower_module_key[4],
+        ))
 
-                        cellID = int(lhit.getCellID0())
-                        decoder.setValue(cellID)
-                        system = decoder["system"].value()
-                        layer = decoder["layer"].value()
-                        side = decoder["side"].value()
-                        module = decoder["module"].value()
-                        sensor = decoder["sensor"].value()
+        if lower_module_key[0] == 1: # if VXB
+            if lower_module_key[3] == 2: # if sensor = 2 then go both -z and +z
+                upper_module_keys.append((
+                    lower_module_key[0],
+                    lower_module_key[1] + 1,
+                    lower_module_key[2],
+                    lower_module_key[3] - 1,
+                    lower_module_key[4],
+                ))
+                upper_module_keys.append((
+                    lower_module_key[0],
+                    lower_module_key[1] + 1,
+                    lower_module_key[2],
+                    lower_module_key[3] + 1,
+                    lower_module_key[4],
+                ))
+            elif lower_module_key[3] == 1: # if sensor = 1 then go -z
+                upper_module_keys.append((
+                    lower_module_key[0],
+                    lower_module_key[1] + 1,
+                    lower_module_key[2],
+                    lower_module_key[3] - 1,
+                    lower_module_key[4],
+                ))
+            elif lower_module_key[3] == 3: # if sensor = 3 then go +z
+                upper_module_keys.append((
+                    lower_module_key[0],
+                    lower_module_key[1] + 1,
+                    lower_module_key[2],
+                    lower_module_key[3] + 1,
+                    lower_module_key[4],
+                ))
 
-                        lhit_v3 = TVector3(lhit_x, lhit_y, lhit_z)
-                        uhit_v3 = TVector3(uhit_x, uhit_y, uhit_z)
+        for lhit in hits[lower_module_key]:
+            for upper_module_key in upper_module_keys:
+                for uhit in hits[upper_module_key]:
+                    lhit_x = lhit.getPosition()[0]
+                    lhit_y = lhit.getPosition()[1]
+                    lhit_z = lhit.getPosition()[2]
+                    uhit_x = uhit.getPosition()[0]
+                    uhit_y = uhit.getPosition()[1]
+                    uhit_z = uhit.getPosition()[2]
 
-                        md_dz = lhit_v3.z() - uhit_v3.z()
-                        md_dphi = lhit_v3.DeltaPhi(uhit_v3)
-                        md_dphiChange = lhit_v3.DeltaPhi(uhit_v3 - lhit_v3)
-                        md_dphiChange_threshold = dPhiThreshold(lhit_v3)
+                    cellID = int(lhit.getCellID0())
+                    decoder.setValue(cellID)
+                    system = decoder["system"].value()
+                    layer = decoder["layer"].value()
+                    side = decoder["side"].value()
+                    module = decoder["module"].value()
+                    sensor = decoder["sensor"].value()
 
-                        vprint(f"lhit_x: {lhit_x} , lhit_y: {lhit_y} , lhit_z: {lhit_z} , uhit_x: {uhit_x} , uhit_y: {uhit_y} , uhit_z: {uhit_z} , ")
-                        vprint(f"md_dz: {md_dz} , md_dphi: {md_dphi} , md_dphiChange: {md_dphiChange} , md_dphiChange_threshold: {md_dphiChange_threshold} , ")
+                    lhit_v3 = TVector3(lhit_x, lhit_y, lhit_z)
+                    uhit_v3 = TVector3(uhit_x, uhit_y, uhit_z)
 
-                        # dz cut
-                        if abs(md_dz) > 5: continue
+                    md_dz = lhit_v3.z() - uhit_v3.z()
+                    md_dphi = lhit_v3.DeltaPhi(uhit_v3)
+                    md_dphiChange = lhit_v3.DeltaPhi(uhit_v3 - lhit_v3)
+                    md_dphiChange_threshold = dPhiThreshold(lhit_v3)
 
-                        # absolute dphi cut
-                        if abs(md_dphi) > md_dphiChange_threshold: continue
+                    vprint(f"lhit_x: {lhit_x} , lhit_y: {lhit_y} , lhit_z: {lhit_z} , uhit_x: {uhit_x} , uhit_y: {uhit_y} , uhit_z: {uhit_z} , ")
+                    vprint(f"md_dz: {md_dz} , md_dphi: {md_dphi} , md_dphiChange: {md_dphiChange} , md_dphiChange_threshold: {md_dphiChange_threshold} , ")
 
-                        # dphi change cut
-                        if abs(md_dphiChange) > md_dphiChange_threshold: continue
+                    # dz cut
+                    if abs(md_dz) > 5: continue
 
-                        # Accept minidoublet
-                        minidoublets[cur_mod].append((lhit, uhit))
+                    # absolute dphi cut
+                    if abs(md_dphi) > md_dphiChange_threshold: continue
 
-                        col_vf["md_x_lower"].push_back(lhit_x)
-                        col_vf["md_y_lower"].push_back(lhit_y)
-                        col_vf["md_z_lower"].push_back(lhit_z)
-                        col_vf["md_x_upper"].push_back(uhit_x)
-                        col_vf["md_y_upper"].push_back(uhit_y)
-                        col_vf["md_z_upper"].push_back(uhit_z)
-                        col_vf["md_system"].push_back(system)
-                        col_vf["md_layer"].push_back(layer)
-                        col_vf["md_side"].push_back(side)
-                        col_vf["md_module"].push_back(module)
-                        col_vf["md_sensor"].push_back(sensor)
+                    # dphi change cut
+                    if abs(md_dphiChange) > md_dphiChange_threshold: continue
 
-                        # compute mcp_id
-                        l_simhits = hitRelations[f"{tracker_systems_map[system]}"].getRelatedToObjects(lhit)
-                        u_simhits = hitRelations[f"{tracker_systems_map[system]}"].getRelatedToObjects(uhit)
-                        if len(l_simhits) > 0 and len(u_simhits) > 0:
-                            l_mcp_id = l_simhits[0].getMCParticle().id()
-                            u_mcp_id = u_simhits[0].getMCParticle().id()
-                            if l_mcp_id == u_mcp_id:
-                                mcp_covered.append(l_mcp_id)
+                    # Accept minidoublet
+                    minidoublets[lower_module_key].append((lhit, uhit))
+
+                    col_vf["md_x_lower"].push_back(lhit_x)
+                    col_vf["md_y_lower"].push_back(lhit_y)
+                    col_vf["md_z_lower"].push_back(lhit_z)
+                    col_vf["md_x_upper"].push_back(uhit_x)
+                    col_vf["md_y_upper"].push_back(uhit_y)
+                    col_vf["md_z_upper"].push_back(uhit_z)
+                    col_vf["md_system"].push_back(system)
+                    col_vf["md_layer"].push_back(layer)
+                    col_vf["md_side"].push_back(side)
+                    col_vf["md_module"].push_back(module)
+                    col_vf["md_sensor"].push_back(sensor)
+
+                    # compute mcp_id
+                    l_simhits = hitRelations[f"{tracker_systems_map[system]}"].getRelatedToObjects(lhit)
+                    u_simhits = hitRelations[f"{tracker_systems_map[system]}"].getRelatedToObjects(uhit)
+                    if len(l_simhits) > 0 and len(u_simhits) > 0:
+                        l_mcp_id = l_simhits[0].getMCParticle().id()
+                        u_mcp_id = u_simhits[0].getMCParticle().id()
+                        if l_mcp_id == u_mcp_id:
+                            mcp_covered.append(l_mcp_id)
+                            col_vf["md_sim_id"].push_back(l_mcp_id)
+                        else:
+                            col_vf["md_sim_id"].push_back(-999)
+                    else:
+                        col_vf["md_sim_id"].push_back(-999)
 
     # set the counter
     col_i["nmd"][0] = col_vf["md_x_lower"].size()
@@ -275,6 +343,7 @@ for ievent, event in enumerate(reader):
         hasmd = mcp_id in mcp_covered
         vprint(f"mcp_id={mcp_id} pt={pt:.3f} eta={eta:.3f} phi={phi:.3f} pdgid={pdgid}")
 
+        col_vf["sim_id"].push_back(mcp_id)
         col_vf["sim_pt"].push_back(pt)
         col_vf["sim_eta"].push_back(eta)
         col_vf["sim_phi"].push_back(phi)
@@ -283,65 +352,13 @@ for ievent, event in enumerate(reader):
         col_vf["sim_isDenom"].push_back(isdenom)
         col_vf["sim_hasmd"].push_back(hasmd)
 
-        if abs(eta) < 1.8:
-            histograms["h_den_pt"].Fill(pt)
-        if pt > 1:
-            histograms["h_den_eta"].Fill(eta)
-        if abs(eta) < 1.8 and pt > 1:
-            histograms["h_den_phi"].Fill(phi)
-        if hasmd:
-            if abs(eta) < 1.8:
-                histograms["h_num_pt"].Fill(pt)
-            if pt > 1:
-                histograms["h_num_eta"].Fill(eta)
-            if abs(eta) < 1.8 and pt > 1:
-                histograms["h_num_phi"].Fill(phi)
-        # inefficiency
-        else:
-            if abs(eta) < 1.8 and pt > 1:
-                print(f"mcp_id: {mcp_id} , pt: {pt} , eta: {eta} , phi: {phi} , pdgid: {pdgid} , ")
-                for isystem in range(1, 7):
-                    for imodule in range(16):
-                        for isensor in range(16):
-                            cur_mod = (isystem, imodule, isensor)
-                            for lowerhit in lowerhits[cur_mod]:
-                                cellID = int(lowerhit.getCellID0())
-                                decoder.setValue(cellID)
-                                layer = decoder['layer'].value()
-                                side = decoder["side"].value()
-                                module = decoder["module"].value()
-                                sensor = decoder["sensor"].value()
-                                x = lowerhit.getPosition()[0]
-                                y = lowerhit.getPosition()[1]
-                                z = lowerhit.getPosition()[2]
-                                print(f"cur_mod: {cur_mod} , layer: {layer} , x: {x} , y: {y} , z: {z} , side: {side} , module: {module} , sensor: {sensor} , ")
-                            for upperhit in upperhits[cur_mod]:
-                                cellID = int(upperhit.getCellID0())
-                                decoder.setValue(cellID)
-                                layer = decoder['layer'].value()
-                                side = decoder["side"].value()
-                                module = decoder["module"].value()
-                                sensor = decoder["sensor"].value()
-                                x = upperhit.getPosition()[0]
-                                y = upperhit.getPosition()[1]
-                                z = upperhit.getPosition()[2]
-                                print(f"cur_mod: {cur_mod} , layer: {layer} , x: {x} , y: {y} , z: {z} , side: {side} , module: {module} , sensor: {sensor} , ")
-
-
-        vprint(f"mcp_id: {mcp_id} , ")
-
     tree.Fill()
 
     if VERBOSE and ievent == STOPEVENT:
         break
 
 reader.close()
-
-# write histograms
 output_file = TFile(options.outFile, 'RECREATE')
-for hist in histograms:
-    histograms[hist].SetDirectory(output_file)
-    histograms[hist].Write()
 tree.Write()
 output_file.Close()
 

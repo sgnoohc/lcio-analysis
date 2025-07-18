@@ -1,0 +1,1 @@
+export MY_MUCOLL_BASEDIR=$PWD
